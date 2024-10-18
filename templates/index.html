@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voronoi Polygons Map</title>
+    <link href="//unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.css" rel="stylesheet">
+    <script src="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+    <style>
+        body { margin: 0; }
+        #map { width: 100%; height: 90vh; }
+        #time-slider {
+            width: 100%;
+            position: absolute;
+            bottom: 20px;
+            z-index: 100;
+        }
+        #time-display {
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            background-color: rgba(255, 255, 255, 0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 16px;
+            z-index: 101;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="time-display"></div> <!-- Time display div -->
+    <input type="range" id="time-slider" min="0" max="{{ date_len }}" value="0">
+
+    <script>
+        // Get data from Flask - stations organized by time
+        var stations = {{ stations|tojson }};
+        var times = Object.keys(stations); // Array of times
+        console.log(times);
+        var currentTimeIndex = 0;
+        var markers = []; // Array to keep track of markers
+
+        // Initialize the map
+        var map = new maplibregl.Map({
+            container: 'map', // ID of the div where the map will be rendered
+            style: 'https://tiles.stadiamaps.com/styles/alidade_smooth.json', // Map style
+            center: [82.5, 22.5], // Longitude, Latitude
+            zoom: 5 // Initial zoom level
+        });
+
+        // Function to get color based on AQI
+        function getAQIColor(aqi) {
+            if (aqi <= 50) return 'green';
+            else if (aqi <= 100) return 'yellow';
+            else if (aqi <= 150) return 'orange';
+            else if (aqi <= 200) return 'red';
+            else if (aqi <= 300) return 'maroon';
+            else return 'purple';
+        }
+
+        // Function to generate Voronoi polygons for the current time index
+        function generateVoronoi(timeIndex) {
+            var selectedTime = times[timeIndex];
+            var currentStations = stations[selectedTime];
+
+            // Convert station data to GeoJSON points
+            var points = Object.keys(currentStations).map(function(id) {
+                var location = currentStations[id];
+                return turf.point([location.lng, location.lat], {
+                    id: id,
+                    aqi: location.aqi,
+                    color: getAQIColor(location.aqi)
+                });
+            });
+
+            var pointCollection = turf.featureCollection(points);
+            var voronoiPolygons = turf.voronoi(pointCollection, { bbox: [70, 10, 95, 35] });
+
+            if (voronoiPolygons) {
+                voronoiPolygons.features.forEach(function(polygon, i) {
+                    var point = pointCollection.features[i];
+                    if (point) {
+                        polygon.properties = {
+                            aqi: point.properties.aqi,
+                            color: point.properties.color
+                        };
+                    }
+                });
+            }
+
+            return { polygons: voronoiPolygons, points: points };
+        }
+
+        // Function to remove existing markers
+        function clearMarkers() {
+            markers.forEach(marker => marker.remove());
+            markers = [];
+        }
+
+        // Initial load of Voronoi polygons and stations
+        function loadVoronoi(timeIndex) {
+            var voronoiData = generateVoronoi(timeIndex);
+
+            // Update Voronoi polygons
+            map.getSource('voronoi').setData(voronoiData.polygons);
+
+            // Clear previous markers
+            clearMarkers();
+
+            // Add new markers
+            voronoiData.points.forEach(point => {
+                var marker = new maplibregl.Marker()
+                    .setLngLat(point.geometry.coordinates)
+                    .setPopup(new maplibregl.Popup().setText(`Station ID: ${point.properties.id}, AQI: ${point.properties.aqi}`))
+                    .addTo(map);
+                markers.push(marker); // Store marker for future removal
+            });
+
+            // Update time display
+            document.getElementById('time-display').innerText = `Current Time: ${times[timeIndex]}`;
+        }
+
+        map.on('load', function() {
+            // Add a GeoJSON source for Voronoi polygons
+            map.addSource('voronoi', {
+                type: 'geojson',
+                data: generateVoronoi(currentTimeIndex).polygons
+            });
+
+            // Add a layer for the Voronoi polygons
+            map.addLayer({
+                id: 'voronoi-polygons',
+                type: 'fill',
+                source: 'voronoi',
+                layout: {},
+                paint: {
+                    'fill-color': ['get', 'color'],  // Use color from properties
+                    'fill-opacity': 0.6,
+                    'fill-outline-color': '#000'
+                }
+            });
+
+            // Initially load the map for the first time slot
+            loadVoronoi(currentTimeIndex);
+        });
+
+        // Slider event listener
+        document.getElementById('time-slider').addEventListener('input', function(e) {
+            currentTimeIndex = parseInt(e.target.value, 10);
+
+            // Update Voronoi polygons and stations for the selected time
+            loadVoronoi(currentTimeIndex);
+        });
+
+        // Add zoom and rotation controls to the map
+        map.addControl(new maplibregl.NavigationControl());
+    </script>
+</body>
+</html>
